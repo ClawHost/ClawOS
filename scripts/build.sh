@@ -9,8 +9,19 @@ TAG="${IMAGE_TAG:-latest}"
 echo ""
 
 echo "Building $IMG:$TAG"
-docker build -t "$IMG:$TAG" -f "$ROOT/Dockerfile" "$ROOT"
+DOCKER_BUILDKIT=1 docker build \
+  --build-arg BUILDKIT_INLINE_CACHE=1 \
+  -t "$IMG:$TAG" \
+  -f "$ROOT/Dockerfile" \
+  "$ROOT"
 
 echo ""
 echo "Done — run with:"
-echo "  docker run --rm -it $IMG:$TAG"
+echo "  docker run --rm -it -e OPENCLAW_GATEWAY_TOKEN=test $IMG:$TAG"
+echo ""
+echo "Run with config overrides:"
+echo "  docker run --rm -it \\"
+echo "    -e OPENCLAW_GATEWAY_TOKEN=test \\"
+echo "    -e CLAWOS_MODEL=anthropic/claude-sonnet-4-5 \\"
+echo "    -e CLAWOS_PORT=18789 \\"
+echo "    $IMG:$TAG"

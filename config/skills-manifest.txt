@@ -1,6 +1,10 @@
 # Managed skills for Clawhost agent containers.
-# Installed to ~/.openclaw/skills/ on first boot.
+# Pre-installed at BUILD time into ~/.openclaw/skills/.
 # Users can override any skill by placing a copy in workspace/skills/.
+#
+# Additional skills at runtime: set CLAWOS_EXTRA_SKILLS="skill-a,skill-b"
 
 agent-browser
 system-monitor
+whisper
+qmd

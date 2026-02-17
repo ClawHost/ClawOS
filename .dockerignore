@@ -2,5 +2,7 @@
 .gitignore
 .dockerignore
 scripts/
+test/
+docker-compose.yml
 README.md
 LICENSE

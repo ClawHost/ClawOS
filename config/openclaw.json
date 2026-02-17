@@ -1,11 +1,31 @@
 {
+  "env": {
+    "vars": {}
+  },
+
   "gateway": {
     "port": 18789,
+    "bind": "lan",
     "auth": {
       "mode": "token",
       "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    },
+    "controlUi": {
+      "enabled": true,
+      "allowInsecureAuth": true,
+      "allowedOrigins": ["*"]
+    },
+    "tls": {
+      "enabled": false
     }
   },
+
+  "auth": {
+    "profiles": {},
+    "order": {}
+  },
+
+  "models": {},
 
   "agents": {
     "defaults": {
@@ -38,6 +58,58 @@
     "profile": "full",
     "elevated": {
       "enabled": false
+    },
+    "media": {
+      "audio": {
+        "enabled": true,
+        "language": "auto",
+        "timeoutSeconds": 120,
+        "models": [
+          {
+            "type": "cli",
+            "command": "whisper-cpp",
+            "args": [
+              "--model",
+              "/opt/clawos/models/whisper/ggml-base.bin",
+              "--language",
+              "auto",
+              "--threads",
+              "4",
+              "--output-txt",
+              "--file",
+              "{file}"
+            ],
+            "language": "auto",
+            "timeoutSeconds": 120
+          }
+        ]
+      }
+    }
+  },
+
+  "skills": {
+    "entries": {
+      "whisper": {
+        "enabled": true,
+        "env": {
+          "WHISPER_CPP_PATH": "/usr/local/bin/whisper-cpp",
+          "WHISPER_MODELS_DIR": "/opt/clawos/models/whisper"
+        },
+        "config": {
+          "model": "base",
+          "threads": 4
+        }
+      },
+      "qmd": {
+        "enabled": true,
+        "env": {
+          "XDG_CACHE_HOME": "/home/node/.cache"
+        },
+        "config": {
+          "defaultCollection": "workspace",
+          "searchMode": "search"
+        }
+      }
     }
   },
 

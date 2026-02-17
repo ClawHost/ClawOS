@@ -2,56 +2,338 @@
 
 Clawhost agent runtime image. Every deployed agent runs inside this container.
 
+## Design Goals
+
+- **Instant deploy** — managed skills (browser, monitor, whisper, qmd) and system deps (ffmpeg, chromium, whisper-cpp, sqlite3) are pre-baked at build time. Container boot is sub-second config injection + exec.
+- **Fast rebuilds** — multi-stage BuildKit build with cache mounts for apt, npm, and cmake. Config file changes don't invalidate expensive compilation or skill layers.
+- **Local voice processing** — whisper.cpp compiled from source with a pre-downloaded GGML model. Speech-to-text runs entirely on-device with zero API calls.
+- **Local search** — [QMD](https://github.com/tobi/qmd) provides hybrid BM25 + vector search over the agent's workspace. Keyword search works instantly; semantic search uses local GGUF models.
+- **Fully configurable** — every runtime parameter (model, port, context tokens, timeout, whisper model, etc.) is overridable via environment variables without mounting a full config file.
+
 ## Layout
 
 ```
 config/
   openclaw.json          Platform default gateway configuration
   security-rules.md      Mandatory rules written to SECURITY.md every boot
-  skills-manifest.txt    Managed skills installed to ~/.openclaw/skills/
+  skills-manifest.txt    Managed skills pre-installed at build time
 defaults/
   workspace/
     TOOLS.md             Baseline workspace file (seeded once, not overwritten)
 scripts/
   validate.sh            Pre-build checks (structure + credential scan)
-  build.sh               Local image build
+  build.sh               Local image build (BuildKit)
   push.sh                Build + push to GHCR
-Dockerfile               Image definition
+Dockerfile               Multi-stage image (whisper-builder → runtime)
 entrypoint.sh            Boot sequence
 ```
 
+## What's Baked Into the Base Image
+
+| Component | Purpose |
+|-----------|---------|
+| OpenClaw + Clawhub | Agent runtime and skill manager |
+| Chromium | Headless browser for agent-browser skill |
+| ffmpeg | Audio/video transcoding (pre-processes audio for whisper-cpp) |
+| whisper-cpp | Local speech-to-text via whisper.cpp (compiled, no Python needed) |
+| GGML model (`base`) | Pre-downloaded whisper model (~148 MB, configurable at build) |
+| libgomp1 | OpenMP runtime for whisper-cpp multi-threaded inference |
+| QMD (`@tobilu/qmd`) | Local hybrid search (BM25 + vector + LLM re-ranking) |
+| sqlite3 | SQLite CLI + extension support for QMD index |
+| agent-browser | Web browsing capability (pre-baked skill) |
+| system-monitor | System monitoring (pre-baked skill) |
+| whisper | Whisper integration skill (pre-baked skill) |
+| qmd | QMD search skill (pre-baked skill) |
+
+## Multi-Stage Build
+
+```
+┌─────────────────────┐    ┌─────────────────────────────────────┐
+│  whisper-builder     │    │  base (runtime)                     │
+│                      │    │                                     │
+│  debian:bookworm-slim│    │  node:22-bookworm-slim              │
+│  cmake + g++         │    │  chromium, ffmpeg, sqlite3, tini    │
+│  compile whisper.cpp │    │  openclaw + clawhub + qmd           │
+│  download GGML model │    │  pre-bake managed skills            │
+│                      │    │                                     │
+│  ┌─────────────────┐ │    │  COPY ← whisper-cpp binary          │
+│  │ whisper-cpp bin  │─┼───│  COPY ← ggml-base.bin model         │
+│  │ ggml-base.bin    │ │    │                                     │
+│  └─────────────────┘ │    │  config + defaults + entrypoint     │
+└─────────────────────┘    └─────────────────────────────────────┘
+        (parallel)                    (parallel until COPY)
+```
+
+BuildKit builds both stages in parallel. The builder compiles whisper.cpp while the runtime installs system packages and npm globals. They join at the `COPY --from=whisper-builder` step. No compile tools (cmake, g++, build-essential) end up in the final image.
+
 ## How Configuration Reaches the Container
+
+### Option 1: Environment Variables (fastest)
+
+Override individual settings without mounting files:
+
+```bash
+docker run --rm \
+  -e OPENCLAW_GATEWAY_TOKEN=tok_xxx \
+  -e CLAWOS_MODEL=anthropic/claude-sonnet-4-5 \
+  -e CLAWOS_PORT=18789 \
+  -e CLAWOS_CONTEXT_TOKENS=200000 \
+  -e CLAWOS_MAX_CONCURRENT=5 \
+  -e CLAWOS_TIMEOUT=900 \
+  -e CLAWOS_LOG_LEVEL=debug \
+  -e CLAWOS_TOOLS_PROFILE=full \
+  -e CLAWOS_SANDBOX_MEMORY=1g \
+  -e CLAWOS_COMPACTION_MODE=aggressive \
+  -e CLAWOS_WHISPER_MODEL=base \
+  -e CLAWOS_WHISPER_THREADS=4 \
+  -e CLAWOS_QMD_ENABLED=true \
+  -e CLAWOS_EXTRA_SKILLS="custom-skill,another-skill" \
+  ghcr.io/clawhost/clawos
+```
+
+### Option 2: Mounted Config (full control)
 
 The provisioner creates Docker configs (Swarm) or bind mounts (BYO) at:
 
 ```
 /run/configs/
-  openclaw.json      Agent-specific gateway config
+  openclaw.json      Agent-specific gateway config (overrides baked default)
   workspace/         SOUL.md, IDENTITY.md, USER.md, AGENTS.md, …
   env                Shell-sourceable secrets (OPENCLAW_GATEWAY_TOKEN, etc.)
+  qmd-collections.sh Optional script to register extra QMD collections
 ```
 
-If no provisioner config is mounted, the image falls back to `config/openclaw.json`.
+### Option 3: Both
+
+Mount a base config + patch specific fields via env vars. Env vars are applied after config file loading.
+
+## Environment Variables Reference
+
+### Model Provider API Keys
+
+Set **one** of these to authenticate with an LLM provider. OpenRouter routes all models through a single key; direct keys go straight to the provider API.
+
+| Variable | Provider | Models |
+|----------|----------|--------|
+| `OPENROUTER_API_KEY` | OpenRouter (routes all models) | All models via single key |
+| `ANTHROPIC_API_KEY` | Anthropic | Claude Opus, Sonnet, Haiku |
+| `OPENAI_API_KEY` | OpenAI | GPT-4o, o1, o3, GPT-4 Turbo |
+| `GOOGLE_API_KEY` | Google | Gemini 2.5 Pro/Flash, Ultra |
+| `GROQ_API_KEY` | Groq | Llama, Mixtral (fast inference) |
+| `MISTRAL_API_KEY` | Mistral | Mistral Large, Medium, Small |
+| `DEEPSEEK_API_KEY` | DeepSeek | DeepSeek V3, R1 |
+| `XAI_API_KEY` | xAI | Grok 3, Grok 4 |
+| `COHERE_API_KEY` | Cohere | Command R, Command R+ |
+| `TOGETHER_API_KEY` | Together AI | Llama, Mixtral, DBRX |
+| `FIREWORKS_API_KEY` | Fireworks AI | Llama, Mixtral (fast inference) |
+| `CEREBRAS_API_KEY` | Cerebras | Llama (fastest inference) |
+| `AI21_API_KEY` | AI21 Labs | Jamba 1.5 |
+| `GITHUB_COPILOT_TOKEN` | GitHub Copilot | Copilot models (token auth) |
+
+### Tool / Service Keys (Optional)
+
+These are read automatically by OpenClaw tools and TTS. No auth profile needed — just pass the env var.
+
+| Variable | Service | Used By |
+|----------|---------|---------|
+| `PERPLEXITY_API_KEY` | Perplexity | `tools.webSearch` (provider="perplexity") |
+| `BRAVE_API_KEY` | Brave Search | `tools.webSearch` (provider="brave") |
+| `FIRECRAWL_API_KEY` | Firecrawl | `tools.webSearch` scraper fallback |
+| `ELEVENLABS_API_KEY` | ElevenLabs | TTS voice synthesis |
+
+**OpenRouter mode**: when `OPENROUTER_API_KEY` is set, the entrypoint automatically:
+- Registers `openrouter:manual` auth profile
+- Adds `models.providers.openrouter` with the OpenRouter base URL
+- Prefixes the model ID with `openrouter/` (e.g., `anthropic/claude-sonnet-4-5` → `openrouter/anthropic/claude-sonnet-4-5`)
+
+**Direct mode**: when a provider-specific key is set, the entrypoint:
+- Registers `<provider>:manual` auth profile (e.g., `anthropic:manual`)
+- Adds `env.vars.<KEY>` for OpenClaw to pick up
+- Model ID used as-is
+
+### Agent Configuration
+
+| Variable | What it patches | Example |
+|----------|----------------|---------|
+| `OPENCLAW_GATEWAY_TOKEN` | Gateway auth token | `tok_xxx` |
+| `CLAWOS_MODEL` | `agents.defaults.model.primary` | `anthropic/claude-sonnet-4-5` |
+| `CLAWOS_CONTEXT_TOKENS` | `agents.defaults.contextTokens` | `200000` |
+| `CLAWOS_MAX_CONCURRENT` | `agents.defaults.maxConcurrent` | `3` |
+| `CLAWOS_TIMEOUT` | `agents.defaults.timeoutSeconds` | `600` |
+| `CLAWOS_PORT` | `gateway.port` | `18789` |
+| `CLAWOS_LOG_LEVEL` | `logging.level` + `logging.consoleLevel` | `info`, `debug` |
+| `CLAWOS_TOOLS_PROFILE` | `tools.profile` | `full`, `minimal` |
+| `CLAWOS_SANDBOX_MEMORY` | `agents.defaults.sandbox.docker.memory` | `512m`, `1g` |
+| `CLAWOS_COMPACTION_MODE` | `agents.defaults.compaction.mode` | `safeguard`, `aggressive` |
+
+### whisper-cpp (Local Voice Processing)
+
+| Variable | What it patches | Default | Example |
+|----------|----------------|---------|---------|
+| `CLAWOS_WHISPER_ENABLED` | `tools.media.audio.enabled` + `skills.entries.whisper.enabled` | `true` | `false` to disable |
+| `CLAWOS_WHISPER_MODEL` | `skills.entries.whisper.config.model` | `base` | `tiny`, `small`, `medium` |
+| `CLAWOS_WHISPER_THREADS` | `skills.entries.whisper.config.threads` | `4` | `2`, `8` |
+| `WHISPER_CPP_PATH` | Skill env: binary location | `/usr/local/bin/whisper-cpp` | — |
+| `WHISPER_MODELS_DIR` | Skill env: models directory | `/opt/clawos/models/whisper` | — |
+
+### QMD (Local Search)
+
+| Variable | What it patches | Default | Example |
+|----------|----------------|---------|---------|
+| `CLAWOS_QMD_ENABLED` | `skills.entries.qmd.enabled` | `true` | `false` to disable |
+| `XDG_CACHE_HOME` | Skill env: QMD cache/index directory | `/home/node/.cache` | — |
+
+### Skills & Verification
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `CLAWOS_EXTRA_SKILLS` | Additional skills to install at boot | `""` |
+| `CLAWOS_VERIFY_SKILLS` | Verify pre-baked skills on boot | `false` |
+
+## QMD — Local Hybrid Search
+
+[QMD](https://github.com/tobi/qmd) (Query Markup Documents) is an on-device search engine that combines BM25 full-text search, vector semantic search, and LLM re-ranking — all running locally via GGUF models.
+
+### What the agent gets
+
+The `qmd` skill gives the agent these search capabilities over its own workspace:
+
+| Command | Mode | Speed | When to use |
+|---------|------|-------|-------------|
+| `qmd search` | BM25 keyword | Instant | Default — keyword matches in notes, memory, docs |
+| `qmd vsearch` | Vector semantic | ~1 min cold / fast warm | When keywords fail, needs meaning-based matching |
+| `qmd query` | Hybrid + re-rank | Slowest | Best quality, explicit user request only |
+| `qmd get` | Retrieve doc | Instant | Fetch a specific document by path or ID |
+
+### Auto-indexing
+
+On first boot, the entrypoint automatically:
+1. Registers the workspace as a QMD collection (`qmd collection add`)
+2. Adds context metadata for better search relevance
+3. Runs `qmd update` to build the BM25 index
+
+This means `qmd search` works immediately. No GGUF models are downloaded for keyword search.
+
+### Semantic search models
+
+Vector search (`vsearch`) and hybrid search (`query`) use local GGUF models that auto-download on first use:
+
+| Model | Size | Purpose |
+|-------|------|---------|
+| embeddinggemma-300M-Q8_0 | ~300 MB | Vector embeddings |
+| qwen3-reranker-0.6b-q8_0 | ~640 MB | Re-ranking |
+| qmd-query-expansion-1.7B-q4_k_m | ~1.1 GB | Query expansion |
+
+Models cache in `~/.cache/qmd/models/` and persist across container restarts when using a volume.
+
+### Provisioner QMD collections
+
+The provisioner can mount a script at `/run/configs/qmd-collections.sh` to register additional collections beyond the workspace:
+
+```bash
+#!/usr/bin/env bash
+# /run/configs/qmd-collections.sh
+qmd collection add /home/node/.openclaw/workspace/memory --name memory --mask "**/*.md"
+qmd context add qmd://memory "Agent memory logs and daily reflections"
+qmd update
+```
+
+### Disabling QMD
+
+Set `CLAWOS_QMD_ENABLED=false` to skip workspace indexing and disable the QMD skill. The binary remains in the image.
+
+## whisper-cpp Details
+
+### Available Models
+
+Build with a different model using `--build-arg WHISPER_MODEL=<name>`:
+
+| Model | Size | Speed | Accuracy | Best For |
+|-------|------|-------|----------|----------|
+| `tiny` | ~75 MB | Fastest | Lower | Quick transcription, low-resource VPS |
+| `base` | ~148 MB | Fast | Good | **Default** — real-time use, good balance |
+| `small` | ~466 MB | Medium | Better | Higher accuracy when latency is acceptable |
+| `medium` | ~1.5 GB | Slower | High | Premium tiers needing accuracy |
+| `large` | ~3 GB | Slowest | Highest | Maximum accuracy (requires ≥4 GB RAM) |
+
+### Adding Extra Models at Runtime
+
+Mount additional GGML models into the models directory:
+
+```bash
+docker run --rm \
+  -v /path/to/ggml-small.bin:/opt/clawos/models/whisper/ggml-small.bin:ro \
+  -e CLAWOS_WHISPER_MODEL=small \
+  ghcr.io/clawhost/clawos
+```
+
+### Disabling whisper-cpp
+
+Set `CLAWOS_WHISPER_ENABLED=false` to disable voice processing entirely. The binary remains in the image but won't be used.
+
+### Audio Pipeline
+
+```
+audio input (any format)
+    │
+    ▼
+  ffmpeg (transcode to 16kHz mono WAV)
+    │
+    ▼
+  whisper-cpp (local inference, no API calls)
+    │
+    ▼
+  text output
+```
+
+ffmpeg handles format conversion. whisper-cpp expects 16 kHz mono WAV — the whisper skill handles this conversion automatically using ffmpeg.
 
 ## Boot Sequence
 
-1. **Provisioner config** — `/run/configs/*` copied into `~/.openclaw/`; falls back to baked-in default
-2. **Workspace templates** — `defaults/workspace/*` seeded with `cp -n` (first boot only)
-3. **Security rules** — `config/security-rules.md` → `workspace/SECURITY.md` (every boot)
-4. **Managed skills** — entries in `config/skills-manifest.txt` installed to `~/.openclaw/skills/`
+1. **Source env** — `/run/configs/env` loaded first (makes vars available for patching)
+2. **Gateway config** — `/run/configs/openclaw.json` or baked default copied to `~/.openclaw/`
+3. **Config patching** — `CLAWOS_*` env vars applied via jq (sub-50ms)
+4. **Auth wiring** — API key env vars → auth profiles + model provider config
+5. **Workspace files** — runtime overrides from `/run/configs/workspace/`, then first-boot template seeding
+6. **Security rules** — `SECURITY.md` overwritten every boot (not user-editable)
+7. **Extra skills** — `CLAWOS_EXTRA_SKILLS` installed if set (skips already-present)
+8. **whisper-cpp check** — logs model, binary path, and availability
+9. **QMD check** — logs version; auto-indexes workspace on first boot
+10. **Launch** — `exec openclaw gateway`
+
+Steps 1–4 complete in under 200ms. Steps 8–9 are status checks (instant if index exists).
 
 ## Directory Tree Inside the Container
 
 ```
+/usr/local/bin/
+  whisper-cpp                 whisper.cpp CLI binary (compiled at build time)
+  qmd                         QMD search engine (installed via npm)
+
+/opt/clawos/
+  config/                     baked-in defaults (read-only reference)
+  defaults/                   first-boot templates
+  models/
+    whisper/
+      ggml-base.bin           pre-downloaded whisper GGML model
+      .default-model          records which model was baked in
+
+/home/node/.cache/
+  qmd/
+    index.sqlite              QMD search index (BM25 + metadata)
+    models/                   GGUF models for semantic search (auto-downloaded)
+
 /home/node/.openclaw/
-  openclaw.json               gateway config (provisioner or default)
+  openclaw.json               gateway config (patched from env + mounted)
   workspace/
     SECURITY.md               platform boundaries (overwritten each boot)
     TOOLS.md                  baseline tool guidance (first boot only)
+    SOUL.md                   agent soul/personality (from provisioner)
+    IDENTITY.md               agent identity (from provisioner)
     memory/                   daily memory logs
     skills/                   user-level skill overrides (highest priority)
     canvas/
-  skills/                     managed skills from manifest (middle priority)
+  skills/                     managed skills — pre-baked (middle priority)
   agents/main/sessions/
   credentials/
   sandboxes/
@@ -63,7 +345,7 @@ If no provisioner config is mounted, the image falls back to `config/openclaw.js
 
 ```bash
 bash scripts/validate.sh    # structure + secret scan
-bash scripts/build.sh       # docker build
+bash scripts/build.sh       # docker build (BuildKit)
 bash scripts/push.sh        # build + docker push
 ```
 
@@ -72,3 +354,31 @@ Override image coordinates:
 ```bash
 IMAGE_NAME=ghcr.io/clawhost/clawos IMAGE_TAG=v2 bash scripts/push.sh
 ```
+
+## Build Args
+
+| Arg | Default | Purpose |
+|-----|---------|---------|
+| `OC_VERSION` | `2026.2.6-3` | OpenClaw npm package version |
+| `WHISPER_CPP_VERSION` | `v1.7.4` | whisper.cpp git tag to compile |
+| `WHISPER_MODEL` | `base` | GGML model to pre-download (`tiny`, `base`, `small`, `medium`, `large`) |
+
+```bash
+# Build with small whisper model and specific OpenClaw version
+docker build \
+  --build-arg OC_VERSION=2026.3.0-1 \
+  --build-arg WHISPER_MODEL=small \
+  --build-arg WHISPER_CPP_VERSION=v1.7.4 \
+  -t clawos:next .
+```
+
+## Build Optimization Notes
+
+- **Multi-stage parallelism**: whisper-builder compiles whisper.cpp while the runtime stage installs system packages and npm globals. BuildKit runs both in parallel until the COPY join.
+- **BuildKit cache mounts**: apt, npm, and cmake caches persist across builds. Rebuilds that only change config files skip everything expensive.
+- **Layer ordering**: System deps → npm globals (openclaw + clawhub + qmd) → skills → whisper binary/model → config files. Each layer only rebuilds when its inputs change.
+- **Slim base**: `node:22-bookworm-slim` saves ~300MB over full `bookworm`. No compile tools in the final image (cmake, g++, build-essential stay in the builder).
+- **Binary stripping**: whisper-cpp binary is `strip`ped in the builder stage, reducing it by ~60%.
+- **Pre-baked skills**: Skills from `config/skills-manifest.txt` are installed at build time. No network calls at boot.
+- **QMD BM25 instant**: Keyword search works immediately without downloading any models. Semantic search models download lazily on first use.
+- **Healthcheck start-period**: 20s (boot is near-instant since everything is pre-baked).

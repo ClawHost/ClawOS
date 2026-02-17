@@ -1,0 +1,111 @@
+###############################################################################
+# ClawOS — local test compose
+#
+# Usage:
+#   docker compose up --build          # build + run
+#   docker compose up --build -d       # detached
+#   docker compose logs -f clawos      # tail logs
+#   docker compose down -v             # tear down + remove volumes
+#
+# Override env vars inline:
+#   CLAWOS_MODEL=anthropic/claude-opus-4 docker compose up --build
+#
+# Mount your own workspace files (soul, identity, etc.):
+#   Place .md files in ./test/workspace/ and they'll appear in the agent.
+###############################################################################
+
+services:
+  clawos:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        OC_VERSION: "2026.2.6-3"
+        WHISPER_MODEL: "base"
+    image: clawos:dev
+    container_name: clawos-test
+    restart: unless-stopped
+    ports:
+      # Gateway: HTTP + WebSocket (ws:// / wss://) on same multiplexed port
+      - "${CLAWOS_PORT:-18789}:18789"
+      # Canvas host (live-reload UI)
+      - "18793:18793"
+    environment:
+      # Gateway auth — set a real token or use this placeholder for local testing
+      OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_GATEWAY_TOKEN:-test-token-local}"
+
+      # WebSocket origin allowlist (comma-separated, "*" = all)
+      # Set to specific origins in production: "https://app.clawhost.com"
+      CLAWOS_ALLOWED_ORIGINS: "${CLAWOS_ALLOWED_ORIGINS:-*}"
+
+      # TLS — disabled for local testing (ws:// not wss://)
+      # The provisioner enables TLS for production deployments.
+      CLAWOS_TLS_ENABLED: "${CLAWOS_TLS_ENABLED:-false}"
+
+      # ── Model provider API keys ───────────────────────────────────
+      # Set ONE of these. OpenRouter routes all models via a single key.
+      # Direct keys use the provider API directly.
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      GROQ_API_KEY: "${GROQ_API_KEY:-}"
+      MISTRAL_API_KEY: "${MISTRAL_API_KEY:-}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      XAI_API_KEY: "${XAI_API_KEY:-}"
+      COHERE_API_KEY: "${COHERE_API_KEY:-}"
+      TOGETHER_API_KEY: "${TOGETHER_API_KEY:-}"
+      FIREWORKS_API_KEY: "${FIREWORKS_API_KEY:-}"
+      CEREBRAS_API_KEY: "${CEREBRAS_API_KEY:-}"
+      AI21_API_KEY: "${AI21_API_KEY:-}"
+      GITHUB_COPILOT_TOKEN: "${GITHUB_COPILOT_TOKEN:-}"
+
+      # ── Tool / service keys (optional) ──────────────────────────
+      # These are read automatically by OpenClaw tools + TTS.
+      PERPLEXITY_API_KEY: "${PERPLEXITY_API_KEY:-}"
+      BRAVE_API_KEY: "${BRAVE_API_KEY:-}"
+      FIRECRAWL_API_KEY: "${FIRECRAWL_API_KEY:-}"
+      ELEVENLABS_API_KEY: "${ELEVENLABS_API_KEY:-}"
+
+      # Agent defaults (all optional — baked config used if unset)
+      CLAWOS_MODEL: "${CLAWOS_MODEL:-}"
+      CLAWOS_CONTEXT_TOKENS: "${CLAWOS_CONTEXT_TOKENS:-}"
+      CLAWOS_MAX_CONCURRENT: "${CLAWOS_MAX_CONCURRENT:-}"
+      CLAWOS_TIMEOUT: "${CLAWOS_TIMEOUT:-}"
+      CLAWOS_LOG_LEVEL: "${CLAWOS_LOG_LEVEL:-debug}"
+      CLAWOS_TOOLS_PROFILE: "${CLAWOS_TOOLS_PROFILE:-}"
+      CLAWOS_SANDBOX_MEMORY: "${CLAWOS_SANDBOX_MEMORY:-}"
+      CLAWOS_COMPACTION_MODE: "${CLAWOS_COMPACTION_MODE:-}"
+
+      # whisper-cpp
+      CLAWOS_WHISPER_ENABLED: "${CLAWOS_WHISPER_ENABLED:-true}"
+      CLAWOS_WHISPER_MODEL: "${CLAWOS_WHISPER_MODEL:-}"
+      CLAWOS_WHISPER_THREADS: "${CLAWOS_WHISPER_THREADS:-}"
+
+      # QMD local search
+      CLAWOS_QMD_ENABLED: "${CLAWOS_QMD_ENABLED:-true}"
+
+      # Skills
+      CLAWOS_EXTRA_SKILLS: "${CLAWOS_EXTRA_SKILLS:-}"
+      CLAWOS_VERIFY_SKILLS: "${CLAWOS_VERIFY_SKILLS:-true}"
+    volumes:
+      # Persist agent data across restarts
+      - openclaw-data:/home/node/.openclaw
+      # Persist QMD index + GGUF model cache
+      - qmd-cache:/home/node/.cache/qmd
+      # Mount test workspace files (soul, identity, etc.)
+      - ./test/workspace:/run/configs/workspace:ro
+      # Mount a custom gateway config (optional — remove if using env vars only)
+      # - ./test/openclaw.json:/run/configs/openclaw.json:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:18789/"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  openclaw-data:
+    driver: local
+  qmd-cache:
+    driver: local
