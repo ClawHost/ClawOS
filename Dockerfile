@@ -1,37 +1,54 @@
 ###############################################################################
-# OpenClaw Agent – Docker Image (Clawhost managed + BYO)
+# ClawOS — Clawhost Agent Runtime
 #
-# Single image used for both Docker Swarm (managed) and BYO deployments.
-# Runtime config is injected via Docker configs/env vars, not baked in.
+# Generic image for managed (Swarm) and BYO deployments.
+# User-specific configuration is injected at runtime via /run/configs/.
 ###############################################################################
 
-FROM node:22-bookworm-slim
+FROM node:22-bookworm
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl ca-certificates gnupg tini jq \
-  && rm -rf /var/lib/apt/lists/*
+# ── System packages ─────────────────────────────────────────────────────────
+# chromium: headless browser for agent skills (Puppeteer/Playwright)
+# tini:     proper PID 1 for signal forwarding
+# jq:       JSON processing in entrypoint
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates chromium curl git gnupg jq tini \
+ && rm -rf /var/lib/apt/lists/*
 
-# Pin OpenClaw version for reproducible builds
-ARG OPENCLAW_VERSION=2026.2.6-3
-RUN npm install -g openclaw@${OPENCLAW_VERSION} clawhub
+# ── Browser automation ──────────────────────────────────────────────────────
+ENV CHROMIUM_PATH=/usr/bin/chromium \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
 
-# Create OpenClaw directory structure
-RUN mkdir -p /home/node/.openclaw/workspace/memory \
-             /home/node/.openclaw/workspace/skills \
-             /home/node/.openclaw/agents/main/sessions \
-             /home/node/.openclaw/credentials \
-             /home/node/.openclaw/canvas \
-             /home/node/.openclaw/cron \
-             /.clawhub \
-  && chown -R node:node /home/node/.openclaw /.clawhub
+# ── Application layer ──────────────────────────────────────────────────────
+ARG OC_VERSION=2026.2.6-3
+RUN npm install -g "openclaw@${OC_VERSION}" clawhub \
+ && npm cache clean --force
 
+# ── Filesystem layout ──────────────────────────────────────────────────────
+RUN set -x \
+ && mkdir -p \
+      /home/node/.openclaw/workspace/{memory,skills,canvas} \
+      /home/node/.openclaw/{skills,agents/main/sessions,credentials,sandboxes,canvas,cron} \
+      /home/node/.cache/ms-playwright \
+      /.clawhub \
+      /opt/clawos/{config,defaults/workspace} \
+ && chown -R node:node /home/node/.openclaw /home/node/.cache /.clawhub /opt/clawos
+
+# ── Baked-in files ──────────────────────────────────────────────────────────
+COPY config/    /opt/clawos/config/
+COPY defaults/  /opt/clawos/defaults/
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
+# ── Runtime ─────────────────────────────────────────────────────────────────
+HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=3 \
   CMD curl -sf http://127.0.0.1:18789/ || exit 1
 
 USER node
+WORKDIR /home/node
 EXPOSE 18789
 ENTRYPOINT ["tini", "--", "entrypoint.sh"]
 CMD ["openclaw", "gateway", "--bind", "lan", "--port", "18789"]

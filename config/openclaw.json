@@ -1,0 +1,53 @@
+{
+  "gateway": {
+    "port": 18789,
+    "auth": {
+      "mode": "token",
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    }
+  },
+
+  "agents": {
+    "defaults": {
+      "workspace": "/home/node/.openclaw/workspace",
+      "model": {
+        "primary": "anthropic/claude-sonnet-4-5"
+      },
+      "compaction": {
+        "mode": "safeguard"
+      },
+      "maxConcurrent": 3,
+      "timeoutSeconds": 600,
+      "contextTokens": 200000,
+      "sandbox": {
+        "mode": "non-main",
+        "scope": "agent",
+        "workspaceAccess": "rw",
+        "docker": {
+          "network": "none",
+          "readOnlyRoot": true,
+          "capDrop": ["ALL"],
+          "pidsLimit": 256,
+          "memory": "512m"
+        }
+      }
+    }
+  },
+
+  "tools": {
+    "profile": "full",
+    "elevated": {
+      "enabled": false
+    }
+  },
+
+  "messages": {
+    "ackReactionScope": "group-mentions"
+  },
+
+  "logging": {
+    "level": "info",
+    "consoleLevel": "info",
+    "redactSensitive": "tools"
+  }
+}

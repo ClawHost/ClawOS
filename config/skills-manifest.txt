@@ -1,0 +1,6 @@
+# Managed skills for Clawhost agent containers.
+# Installed to ~/.openclaw/skills/ on first boot.
+# Users can override any skill by placing a copy in workspace/skills/.
+
+agent-browser
+system-monitor
