@@ -7,7 +7,7 @@ WS="$OC/workspace"
 CFG="/opt/clawos/config"
 TPL="/opt/clawos/defaults"
 RUN_CFG="/run/configs"
-WHISPER_BIN="${WHISPER_CPP_PATH:-/usr/local/bin/whisper-cpp}"
+WHISPER_BIN="${WHISPER_CPP_PATH:-/usr/local/bin/whisper-cli}"
 WHISPER_DIR="${WHISPER_MODELS_DIR:-/opt/clawos/models/whisper}"
 QMD_CACHE="${XDG_CACHE_HOME:-/home/node/.cache}/qmd"
 
@@ -86,19 +86,15 @@ patch_config() {
   [[ -n "${CLAWOS_TOOLS_PROFILE:-}" ]] \
     && filter="$filter | .tools.profile = env.CLAWOS_TOOLS_PROFILE"
 
-  # tools.media.audio (whisper-cpp transcription)
-  if [[ "${CLAWOS_WHISPER_ENABLED:-}" == "false" ]]; then
-    filter="$filter | .tools.media.audio.enabled = false | .skills.entries.whisper.enabled = false"
-  elif [[ "${CLAWOS_WHISPER_ENABLED:-}" == "true" ]]; then
-    filter="$filter | .tools.media.audio.enabled = true | .skills.entries.whisper.enabled = true"
+  # tools.media.audio (whisper-cli transcription)
+  # Model and threads are patched into the CLI args
+  if [[ -n "${CLAWOS_WHISPER_MODEL:-}" ]]; then
+    local model_path="/opt/clawos/models/whisper/ggml-${CLAWOS_WHISPER_MODEL}.bin"
+    filter="$filter | .tools.media.audio.models[0].args[1] = \"$model_path\""
   fi
-
-  # skills.entries.whisper.config
-  [[ -n "${CLAWOS_WHISPER_MODEL:-}" ]] \
-    && filter="$filter | .skills.entries.whisper.config.model = env.CLAWOS_WHISPER_MODEL"
-
-  [[ -n "${CLAWOS_WHISPER_THREADS:-}" ]] \
-    && filter="$filter | .skills.entries.whisper.config.threads = (env.CLAWOS_WHISPER_THREADS | tonumber)"
+  if [[ -n "${CLAWOS_WHISPER_THREADS:-}" ]]; then
+    filter="$filter | .tools.media.audio.models[0].args[5] = env.CLAWOS_WHISPER_THREADS"
+  fi
 
   # skills.entries.qmd
   if [[ "${CLAWOS_QMD_ENABLED:-}" == "false" ]]; then
@@ -106,6 +102,14 @@ patch_config() {
   elif [[ "${CLAWOS_QMD_ENABLED:-}" == "true" ]]; then
     filter="$filter | .skills.entries.qmd.enabled = true"
   fi
+
+  # tts (text-to-speech) — lives under messages.tts per OpenClaw schema
+  [[ -n "${CLAWOS_TTS_AUTO:-}" ]] \
+    && filter="$filter | .messages.tts.auto = env.CLAWOS_TTS_AUTO"
+  [[ -n "${CLAWOS_TTS_PROVIDER:-}" ]] \
+    && filter="$filter | .messages.tts.provider = env.CLAWOS_TTS_PROVIDER"
+  [[ -n "${CLAWOS_TTS_VOICE:-}" ]] \
+    && filter="$filter | .messages.tts.edge.voice = env.CLAWOS_TTS_VOICE"
 
   if [[ "$filter" != "." ]]; then
     log "patching config from environment"
@@ -264,6 +268,108 @@ wire_auth() {
 
 [[ -f "$OC/openclaw.json" ]] && wire_auth
 
+# ── 3c. Channels — wire IM/messaging tokens into OpenClaw channels + plugins ─
+# Set the env var(s) for the channel; entrypoint enables channel + plugin and
+# injects token into env.vars so OpenClaw can substitute at runtime.
+#
+# Telegram:  TELEGRAM_BOT_TOKEN
+# Discord:   DISCORD_BOT_TOKEN
+# Slack:     SLACK_BOT_TOKEN, SLACK_APP_TOKEN (both often required)
+# WhatsApp:  no token (QR pairing); set CLAWOS_WHATSAPP_ENABLED=true to enable
+#
+# Other channels (IRC, Signal, Feishu, etc.) may need plugins or extra config;
+# provisioner can mount a full openclaw.json or extend via /run/configs.
+wire_channels() {
+  local file="$OC/openclaw.json"
+  local filter="."
+  local channel_count=0
+
+  # Telegram
+  if [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]]; then
+    log "channels: enabling Telegram"
+    # dmPolicy: "allowlist" + allowFrom = pre-approved user IDs (no pairing needed)
+    local tg_dm="pairing"
+    local tg_allow=""
+    if [[ -n "${CLAWOS_TELEGRAM_ALLOW_FROM:-}" ]]; then
+      tg_dm="allowlist"
+      # jq: split comma, trim, parse as number, drop empty
+      tg_allow=" | .channels.telegram.dmPolicy = \"allowlist\"
+      | .channels.telegram.allowFrom = (env.CLAWOS_TELEGRAM_ALLOW_FROM | split(\",\") | map(gsub(\"^\\\\s+|\\\\s+$\"; \"\") | select(length > 0) | tonumber))"
+      log "channels: Telegram allowlist (no pairing): ${CLAWOS_TELEGRAM_ALLOW_FROM}"
+    fi
+    filter="$filter
+      | .env.vars.TELEGRAM_BOT_TOKEN = \"\${TELEGRAM_BOT_TOKEN}\"
+      | .channels.telegram = {
+          \"enabled\": true,
+          \"botToken\": \"\${TELEGRAM_BOT_TOKEN}\",
+          \"dmPolicy\": \"$tg_dm\",
+          \"groupPolicy\": \"allowlist\",
+          \"streamMode\": \"partial\"
+        }
+      $tg_allow
+      | .plugins.entries.telegram = {\"enabled\": true}"
+    channel_count=$((channel_count + 1))
+  fi
+
+  # Discord
+  if [[ -n "${DISCORD_BOT_TOKEN:-}" ]]; then
+    log "channels: enabling Discord"
+    filter="$filter
+      | .env.vars.DISCORD_BOT_TOKEN = \"\${DISCORD_BOT_TOKEN}\"
+      | .channels.discord = {
+          \"enabled\": true,
+          \"token\": \"\${DISCORD_BOT_TOKEN}\",
+          \"dm\": {\"policy\": \"pairing\"}
+        }
+      | .plugins.entries.discord = {\"enabled\": true}"
+    channel_count=$((channel_count + 1))
+  fi
+
+  # Slack (bot + app token)
+  if [[ -n "${SLACK_BOT_TOKEN:-}" ]] || [[ -n "${SLACK_APP_TOKEN:-}" ]]; then
+    log "channels: enabling Slack"
+    filter="$filter
+      | .env.vars.SLACK_BOT_TOKEN = \"\${SLACK_BOT_TOKEN}\"
+      | .env.vars.SLACK_APP_TOKEN = \"\${SLACK_APP_TOKEN}\"
+      | .channels.slack = {
+          \"enabled\": true,
+          \"botToken\": \"\${SLACK_BOT_TOKEN}\",
+          \"appToken\": \"\${SLACK_APP_TOKEN}\",
+          \"dm\": {\"policy\": \"pairing\"}
+        }
+      | .plugins.entries.slack = {\"enabled\": true}"
+    channel_count=$((channel_count + 1))
+  fi
+
+  # WhatsApp — no token; QR pairing at runtime. Enable channel + plugin.
+  if [[ "${CLAWOS_WHATSAPP_ENABLED:-}" == "true" ]]; then
+    log "channels: enabling WhatsApp (QR pairing at runtime)"
+    filter="$filter
+      | .channels.whatsapp = {
+          \"dmPolicy\": \"pairing\",
+          \"accounts\": {\"default\": {\"enabled\": true}}
+        }
+      | .plugins.entries.whatsapp = {\"enabled\": true}"
+    channel_count=$((channel_count + 1))
+  fi
+
+  if [[ "$channel_count" -eq 0 ]]; then
+    return 0
+  fi
+
+  log "channels: wired $channel_count channel(s)"
+  local tmp
+  tmp=$(mktemp)
+  if jq "$filter" "$file" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$file"
+  else
+    log "warning: channel wiring failed"
+    rm -f "$tmp"
+  fi
+}
+
+[[ -f "$OC/openclaw.json" ]] && wire_channels
+
 # ── 4. Workspace files ─────────────────────────────────────────────────────
 # Runtime workspace overrides (soul, identity, agents, etc.)
 if [[ -d "$RUN_CFG/workspace" ]]; then
@@ -293,7 +399,7 @@ if [[ -n "${CLAWOS_EXTRA_SKILLS:-}" ]]; then
       log "  $name — present"
     else
       log "  $name — installing"
-      (cd "$OC" && clawhub install "$name" 2>&1 | sed 's/^/    /') \
+      (cd "$OC" && clawhub install --force "$name" 2>&1 | sed 's/^/    /') \
         || log "  $name — failed (non-fatal)"
     fi
   done
@@ -310,32 +416,38 @@ if [[ "${CLAWOS_VERIFY_SKILLS:-false}" == "true" && -f "$CFG/skills-manifest.txt
       log "  $name — ok"
     else
       log "  $name — missing, reinstalling"
-      (cd "$OC" && clawhub install "$name" 2>&1 | sed 's/^/    /') \
+      (cd "$OC" && clawhub install --force "$name" 2>&1 | sed 's/^/    /') \
         || log "  $name — failed (non-fatal)"
     fi
   done < "$CFG/skills-manifest.txt"
 fi
 
-# ── 8. whisper-cpp status ───────────────────────────────────────────────────
+# ── 8. whisper-cpp status + model symlinks ───────────────────────────────────
 if [[ -x "$WHISPER_BIN" ]]; then
   default_model=""
   [[ -f "$WHISPER_DIR/.default-model" ]] && default_model=$(cat "$WHISPER_DIR/.default-model")
   active_model="${CLAWOS_WHISPER_MODEL:-$default_model}"
   model_file="$WHISPER_DIR/ggml-${active_model}.bin"
 
-  if [[ "${CLAWOS_WHISPER_ENABLED:-true}" == "true" ]]; then
-    if [[ -f "$model_file" ]]; then
-      model_size=$(du -sh "$model_file" | cut -f1)
-      log "whisper-cpp ready — model=$active_model ($model_size), bin=$WHISPER_BIN"
-    else
-      log "whisper-cpp binary present but model not found: $model_file"
-      log "  available models:"
-      for m in "$WHISPER_DIR"/ggml-*.bin; do
-        [[ -f "$m" ]] && log "    $(basename "$m")"
-      done
-    fi
+  if [[ -f "$model_file" ]]; then
+    model_size=$(du -sh "$model_file" | cut -f1)
+    log "whisper-cpp ready — model=$active_model ($model_size), bin=$WHISPER_BIN"
+    
+    # Create symlinks in workspace so agents can find models by short name
+    # (e.g., "base.en" or "base" instead of full path)
+    ln -sf "$model_file" "$WS/base.en" 2>/dev/null || true
+    ln -sf "$model_file" "$WS/base" 2>/dev/null || true
+    ln -sf "$model_file" "$WS/ggml-base.bin" 2>/dev/null || true
+    ln -sf "$model_file" "$WS/ggml-base.en.bin" 2>/dev/null || true
+    # Also in home directory for agents that look there
+    ln -sf "$model_file" "/home/node/base.en" 2>/dev/null || true
+    ln -sf "$model_file" "/home/node/base" 2>/dev/null || true
   else
-    log "whisper-cpp disabled (CLAWOS_WHISPER_ENABLED=false)"
+    log "whisper-cpp binary present but model not found: $model_file"
+    log "  available models:"
+    for m in "$WHISPER_DIR"/ggml-*.bin; do
+      [[ -f "$m" ]] && log "    $(basename "$m")"
+    done
   fi
 else
   log "whisper-cpp not available (binary not found at $WHISPER_BIN)"

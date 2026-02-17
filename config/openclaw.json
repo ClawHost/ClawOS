@@ -4,6 +4,7 @@
   },
 
   "gateway": {
+    "mode": "local",
     "port": 18789,
     "bind": "lan",
     "auth": {
@@ -67,7 +68,7 @@
         "models": [
           {
             "type": "cli",
-            "command": "whisper-cpp",
+            "command": "whisper-cli",
             "args": [
               "--model",
               "/opt/clawos/models/whisper/ggml-base.bin",
@@ -89,17 +90,6 @@
 
   "skills": {
     "entries": {
-      "whisper": {
-        "enabled": true,
-        "env": {
-          "WHISPER_CPP_PATH": "/usr/local/bin/whisper-cpp",
-          "WHISPER_MODELS_DIR": "/opt/clawos/models/whisper"
-        },
-        "config": {
-          "model": "base",
-          "threads": 4
-        }
-      },
       "qmd": {
         "enabled": true,
         "env": {
@@ -114,7 +104,15 @@
   },
 
   "messages": {
-    "ackReactionScope": "group-mentions"
+    "ackReactionScope": "group-mentions",
+    "tts": {
+      "auto": "inbound",
+      "provider": "edge",
+      "edge": {
+        "enabled": true,
+        "voice": "en-US-AriaNeural"
+      }
+    }
   },
 
   "logging": {

@@ -28,18 +28,26 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       build-essential cmake git ca-certificates curl
 
-ARG WHISPER_CPP_VERSION=v1.7.4
+# Use latest stable release (v1.8.x has the proper whisper-cli binary)
+ARG WHISPER_CPP_VERSION=v1.8.3
+# GGML_NATIVE=OFF: avoid -mcpu=native+nodotprod+noi8mm+nosve on ARM64 (unsupported by
+# older GCC in Debian); build stays portable across aarch64 and amd64.
+# Build with shared libs, then copy both binary AND libraries to runtime.
 RUN git clone --depth 1 --branch "${WHISPER_CPP_VERSION}" \
-      https://github.com/ggerganov/whisper.cpp /src/whisper.cpp \
+      https://github.com/ggml-org/whisper.cpp /src/whisper.cpp \
  && cd /src/whisper.cpp \
  && cmake -B build \
       -DCMAKE_BUILD_TYPE=Release \
       -DWHISPER_BUILD_TESTS=OFF \
       -DWHISPER_BUILD_EXAMPLES=ON \
+      -DGGML_NATIVE=OFF \
  && cmake --build build --config Release -j"$(nproc)" \
- && cp build/bin/whisper-cli /usr/local/bin/whisper-cpp 2>/dev/null \
-    || cp build/bin/main /usr/local/bin/whisper-cpp \
- && strip /usr/local/bin/whisper-cpp
+ && cp build/bin/whisper-cli /usr/local/bin/whisper-cli \
+ && strip /usr/local/bin/whisper-cli \
+ && mkdir -p /usr/local/lib/whisper \
+ && cp -a build/src/libwhisper.so* /usr/local/lib/whisper/ 2>/dev/null || true \
+ && cp -a build/ggml/src/libggml*.so* /usr/local/lib/whisper/ 2>/dev/null || true \
+ && find build -name "*.so*" -type f -exec cp -a {} /usr/local/lib/whisper/ \; 2>/dev/null || true
 
 # Pre-download GGML model (cached in its own layer).
 # base (~148 MB) — good balance of speed and accuracy for real-time use.
@@ -89,7 +97,7 @@ ENV CHROMIUM_PATH=/usr/bin/chromium \
     PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
 
 # ── 3. OpenClaw + Clawhub + QMD (changes on version bump → separate layer) ─
-ARG OC_VERSION=2026.2.6-3
+ARG OC_VERSION=2026.2.15
 RUN --mount=type=cache,target=/root/.npm \
     npm install -g "openclaw@${OC_VERSION}" clawhub @tobilu/qmd
 
@@ -118,16 +126,34 @@ RUN --mount=type=cache,target=/home/node/.npm,uid=1000,gid=1000 \
         name="$(printf "%s" "$line" | sed "s/#.*//;s/[[:space:]]//g")"; \
         [ -z "$name" ] && continue; \
         echo "[build] pre-installing skill: $name"; \
-        clawhub install "$name" 2>&1 || echo "[build] warning: $name install failed (non-fatal)"; \
+        clawhub install --force "$name" 2>&1 || echo "[build] warning: $name install failed (non-fatal)"; \
       done < /opt/clawos/config/skills-manifest.txt \
     '
 
-# ── 6. whisper.cpp binary + GGML model (from builder stage) ────────────────
-# Binary: /usr/local/bin/whisper-cpp
+# ── 6. whisper.cpp binary + libraries + GGML model (from builder stage) ───
+# Binary: whisper-cli (canonical name as of whisper.cpp v1.8+)
+# Libraries: libwhisper.so, libggml*.so (required at runtime)
 # Models: /opt/clawos/models/whisper/ggml-{model}.bin
-COPY --from=whisper-builder /usr/local/bin/whisper-cpp /usr/local/bin/whisper-cpp
+COPY --from=whisper-builder /usr/local/bin/whisper-cli /usr/local/bin/whisper-cli
+COPY --from=whisper-builder /usr/local/lib/whisper/ /usr/local/lib/
 COPY --from=whisper-builder /opt/whisper-models/ /opt/clawos/models/whisper/
-RUN chown -R node:node /opt/clawos/models
+# Create symlinks for common whisper command names (agents may use different names)
+# Also symlink models to common locations and with common names where whisper tools look
+RUN ldconfig \
+ && ln -sf /usr/local/bin/whisper-cli /usr/local/bin/whisper \
+ && ln -sf /usr/local/bin/whisper-cli /usr/local/bin/whisper-cpp \
+ && mkdir -p /home/node/.cache/whisper /home/node/models /home/node/.openclaw/workspace \
+ && ln -sf /opt/clawos/models/whisper/ggml-base.bin /home/node/.cache/whisper/ggml-base.bin \
+ && ln -sf /opt/clawos/models/whisper/ggml-base.bin /home/node/.cache/whisper/base.en \
+ && ln -sf /opt/clawos/models/whisper/ggml-base.bin /home/node/.cache/whisper/base \
+ && ln -sf /opt/clawos/models/whisper/ggml-base.bin /home/node/models/ggml-base.bin \
+ && ln -sf /opt/clawos/models/whisper/ggml-base.bin /home/node/models/base.en \
+ && ln -sf /opt/clawos/models/whisper/ggml-base.bin /home/node/models/base \
+ && ln -sf /opt/clawos/models/whisper /home/node/.whisper \
+ && ln -sf /opt/clawos/models/whisper/ggml-base.bin /home/node/.openclaw/workspace/base.en \
+ && ln -sf /opt/clawos/models/whisper/ggml-base.bin /home/node/.openclaw/workspace/base \
+ && ln -sf /opt/clawos/models/whisper/ggml-base.bin /home/node/.openclaw/workspace/ggml-base.bin \
+ && chown -R node:node /opt/clawos/models /home/node/.cache/whisper /home/node/models /home/node/.whisper
 
 # ── 7. Config + defaults (changes often → late layer for fast rebuilds) ────
 COPY config/    /opt/clawos/config/
@@ -169,12 +195,16 @@ ENV OPENROUTER_API_KEY="" \
     CLAWOS_COMPACTION_MODE="" \
     CLAWOS_EXTRA_SKILLS="" \
     CLAWOS_VERIFY_SKILLS=false \
-    CLAWOS_WHISPER_ENABLED=true \
+    CLAWOS_WHATSAPP_ENABLED="" \
+    CLAWOS_TELEGRAM_ALLOW_FROM="" \
     CLAWOS_WHISPER_MODEL="" \
     CLAWOS_WHISPER_THREADS="" \
-    WHISPER_CPP_PATH=/usr/local/bin/whisper-cpp \
+    WHISPER_CPP_PATH=/usr/local/bin/whisper-cli \
     WHISPER_MODELS_DIR=/opt/clawos/models/whisper \
     CLAWOS_QMD_ENABLED=true \
+    CLAWOS_TTS_AUTO="" \
+    CLAWOS_TTS_PROVIDER="" \
+    CLAWOS_TTS_VOICE="" \
     XDG_CACHE_HOME=/home/node/.cache
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=3 \

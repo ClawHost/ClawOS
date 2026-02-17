@@ -3,8 +3,10 @@
 # Users can override any skill by placing a copy in workspace/skills/.
 #
 # Additional skills at runtime: set CLAWOS_EXTRA_SKILLS="skill-a,skill-b"
+#
+# Note: whisper-cli (speech-to-text) is configured via tools.media.audio in
+# openclaw.json, not as a skill. The "whisper" skill is for encrypted agent
+# communication, which is different.
 
 agent-browser
-system-monitor
-whisper
 qmd

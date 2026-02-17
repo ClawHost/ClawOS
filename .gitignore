@@ -2,3 +2,6 @@
 *.tmp
 .DS_Store
 test/workspace/
+
+
+tester.sh

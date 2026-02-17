@@ -20,7 +20,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        OC_VERSION: "2026.2.6-3"
+        OC_VERSION: "2026.2.15"
         WHISPER_MODEL: "base"
     image: clawos:dev
     container_name: clawos-test
@@ -67,6 +67,20 @@ services:
       FIRECRAWL_API_KEY: "${FIRECRAWL_API_KEY:-}"
       ELEVENLABS_API_KEY: "${ELEVENLABS_API_KEY:-}"
 
+      # ── Channels (IM / messaging) ─────────────────────────────
+      # Set token(s) to enable; entrypoint wires channel + plugin and env.vars.
+      # Telegram: bot token from @BotFather
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      # Telegram: comma-separated user IDs to allow without pairing (e.g. 475658119)
+      CLAWOS_TELEGRAM_ALLOW_FROM: "${CLAWOS_TELEGRAM_ALLOW_FROM:-}"
+      # Discord: bot token from Discord Developer Portal
+      DISCORD_BOT_TOKEN: "${DISCORD_BOT_TOKEN:-}"
+      # Slack: Bot User OAuth Token + App-level token (Socket Mode)
+      SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN:-}"
+      SLACK_APP_TOKEN: "${SLACK_APP_TOKEN:-}"
+      # WhatsApp: no token — set true to enable; pair via QR at runtime
+      CLAWOS_WHATSAPP_ENABLED: "${CLAWOS_WHATSAPP_ENABLED:-false}"
+
       # Agent defaults (all optional — baked config used if unset)
       CLAWOS_MODEL: "${CLAWOS_MODEL:-}"
       CLAWOS_CONTEXT_TOKENS: "${CLAWOS_CONTEXT_TOKENS:-}"
@@ -77,13 +91,20 @@ services:
       CLAWOS_SANDBOX_MEMORY: "${CLAWOS_SANDBOX_MEMORY:-}"
       CLAWOS_COMPACTION_MODE: "${CLAWOS_COMPACTION_MODE:-}"
 
-      # whisper-cpp
-      CLAWOS_WHISPER_ENABLED: "${CLAWOS_WHISPER_ENABLED:-true}"
+      # whisper-cli
       CLAWOS_WHISPER_MODEL: "${CLAWOS_WHISPER_MODEL:-}"
       CLAWOS_WHISPER_THREADS: "${CLAWOS_WHISPER_THREADS:-}"
 
       # QMD local search
       CLAWOS_QMD_ENABLED: "${CLAWOS_QMD_ENABLED:-true}"
+
+      # TTS (text-to-speech) — Edge TTS is free, no API key needed
+      # Auto modes: off, always, inbound (reply to voice with voice), tagged
+      CLAWOS_TTS_AUTO: "${CLAWOS_TTS_AUTO:-inbound}"
+      CLAWOS_TTS_PROVIDER: "${CLAWOS_TTS_PROVIDER:-edge}"
+      # Edge voices: en-US-AriaNeural, en-US-GuyNeural, en-GB-SoniaNeural, etc.
+      # Full list: https://learn.microsoft.com/en-us/azure/ai-services/speech-service/language-support
+      CLAWOS_TTS_VOICE: "${CLAWOS_TTS_VOICE:-en-US-AriaNeural}"
 
       # Skills
       CLAWOS_EXTRA_SKILLS: "${CLAWOS_EXTRA_SKILLS:-}"
