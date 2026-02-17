@@ -20,12 +20,21 @@ config/
 defaults/
   workspace/
     TOOLS.md             Baseline workspace file (seeded once, not overwritten)
+docker/
+  whisper-build.sh       Stage 1: build whisper.cpp + download GGML model
+  whisper-symlinks.sh    Stage 2: ldconfig + binary/model symlinks
+  env.vars               Runtime ENV names (documentation)
+  README.md              Docker build assets overview
 scripts/
+  lib.sh                 Entrypoint constants and log (sourced at runtime)
+  patch-config.sh        Env-based config patching (jq)
+  wire-auth.sh           Auth profile wiring (API keys)
+  wire-channels.sh       Channel/plugin wiring (Telegram, Discord, etc.)
   validate.sh            Pre-build checks (structure + credential scan)
   build.sh               Local image build (BuildKit)
   push.sh                Build + push to GHCR
 Dockerfile               Multi-stage image (whisper-builder → runtime)
-entrypoint.sh            Boot sequence
+entrypoint.sh            Boot orchestrator (sources scripts/*.sh, runs steps)
 ```
 
 ## What's Baked Into the Base Image

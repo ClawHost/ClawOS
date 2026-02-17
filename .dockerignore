@@ -1,7 +1,12 @@
 .git
 .gitignore
 .dockerignore
-scripts/
+# Ignore scripts/ but include entrypoint lib (sourced at runtime)
+scripts/*
+!scripts/lib.sh
+!scripts/patch-config.sh
+!scripts/wire-auth.sh
+!scripts/wire-channels.sh
 test/
 docker-compose.yml
 README.md
