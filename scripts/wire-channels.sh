@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Wire IM/messaging tokens into OpenClaw channels + plugins.
+# Merges into existing channel config (preserves allowFrom, dmPolicy, etc.).
 # Requires: lib.sh (OC, log). Env: TELEGRAM_BOT_TOKEN, DISCORD_BOT_TOKEN, etc.
 
 wire_channels() {
@@ -9,25 +10,22 @@ wire_channels() {
 
   if [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]]; then
     log "channels: enabling Telegram"
-    local tg_dm="pairing"
-    local tg_allow=""
-    if [[ -n "${CLAWOS_TELEGRAM_ALLOW_FROM:-}" ]]; then
-      tg_dm="allowlist"
-      tg_allow=" | .channels.telegram.dmPolicy = \"allowlist\"
-      | .channels.telegram.allowFrom = (env.CLAWOS_TELEGRAM_ALLOW_FROM | split(\",\") | map(gsub(\"^\\\\s+|\\\\s+$\"; \"\") | select(length > 0) | tonumber))"
-      log "channels: Telegram allowlist (no pairing): ${CLAWOS_TELEGRAM_ALLOW_FROM}"
-    fi
+    # Merge token + defaults without clobbering existing keys (allowFrom, dmPolicy, etc.)
     filter="$filter
       | .env.vars.TELEGRAM_BOT_TOKEN = \"\${TELEGRAM_BOT_TOKEN}\"
-      | .channels.telegram = {
-          \"enabled\": true,
-          \"botToken\": \"\${TELEGRAM_BOT_TOKEN}\",
-          \"dmPolicy\": \"$tg_dm\",
-          \"groupPolicy\": \"allowlist\",
-          \"streamMode\": \"partial\"
-        }
-      $tg_allow
+      | .channels.telegram.enabled = true
+      | .channels.telegram.botToken = \"\${TELEGRAM_BOT_TOKEN}\"
+      | .channels.telegram.dmPolicy //= \"pairing\"
+      | .channels.telegram.groupPolicy //= \"allowlist\"
+      | .channels.telegram.streamMode //= \"partial\"
       | .plugins.entries.telegram = {\"enabled\": true}"
+    # Allow env-based override for allowlist (standalone/docker-compose usage)
+    if [[ -n "${CLAWOS_TELEGRAM_ALLOW_FROM:-}" ]]; then
+      filter="$filter
+        | .channels.telegram.dmPolicy = \"allowlist\"
+        | .channels.telegram.allowFrom = (env.CLAWOS_TELEGRAM_ALLOW_FROM | split(\",\") | map(gsub(\"^\\\\s+|\\\\s+$\"; \"\") | select(length > 0) | tonumber))"
+      log "channels: Telegram allowlist (env override): ${CLAWOS_TELEGRAM_ALLOW_FROM}"
+    fi
     channel_count=$((channel_count + 1))
   fi
 
@@ -35,11 +33,9 @@ wire_channels() {
     log "channels: enabling Discord"
     filter="$filter
       | .env.vars.DISCORD_BOT_TOKEN = \"\${DISCORD_BOT_TOKEN}\"
-      | .channels.discord = {
-          \"enabled\": true,
-          \"token\": \"\${DISCORD_BOT_TOKEN}\",
-          \"dm\": {\"policy\": \"pairing\"}
-        }
+      | .channels.discord.enabled = true
+      | .channels.discord.token = \"\${DISCORD_BOT_TOKEN}\"
+      | .channels.discord.dm.policy //= \"pairing\"
       | .plugins.entries.discord = {\"enabled\": true}"
     channel_count=$((channel_count + 1))
   fi
@@ -49,12 +45,10 @@ wire_channels() {
     filter="$filter
       | .env.vars.SLACK_BOT_TOKEN = \"\${SLACK_BOT_TOKEN}\"
       | .env.vars.SLACK_APP_TOKEN = \"\${SLACK_APP_TOKEN}\"
-      | .channels.slack = {
-          \"enabled\": true,
-          \"botToken\": \"\${SLACK_BOT_TOKEN}\",
-          \"appToken\": \"\${SLACK_APP_TOKEN}\",
-          \"dm\": {\"policy\": \"pairing\"}
-        }
+      | .channels.slack.enabled = true
+      | .channels.slack.botToken = \"\${SLACK_BOT_TOKEN}\"
+      | .channels.slack.appToken = \"\${SLACK_APP_TOKEN}\"
+      | .channels.slack.dm.policy //= \"pairing\"
       | .plugins.entries.slack = {\"enabled\": true}"
     channel_count=$((channel_count + 1))
   fi
@@ -62,10 +56,8 @@ wire_channels() {
   if [[ "${CLAWOS_WHATSAPP_ENABLED:-}" == "true" ]]; then
     log "channels: enabling WhatsApp (QR pairing at runtime)"
     filter="$filter
-      | .channels.whatsapp = {
-          \"dmPolicy\": \"pairing\",
-          \"accounts\": {\"default\": {\"enabled\": true}}
-        }
+      | .channels.whatsapp.dmPolicy //= \"pairing\"
+      | .channels.whatsapp.accounts.default.enabled = true
       | .plugins.entries.whatsapp = {\"enabled\": true}"
     channel_count=$((channel_count + 1))
   fi
