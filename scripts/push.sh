@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Push to GHCR: log in first with a GitHub PAT that has write:packages:
+#   echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
+# Or: docker login ghcr.io  (then enter GitHub username + PAT as password)
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMG="${IMAGE_NAME:-ghcr.io/clawhost/clawos}"
 TAG="${IMAGE_TAG:-latest}"
