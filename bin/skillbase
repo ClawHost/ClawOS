@@ -1,0 +1,462 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ─── Skillbase CLI ────────────────────────────────────────────────────────────
+# Standalone API client for Clawhost Skillbase.
+# Requires: curl, jq
+# ──────────────────────────────────────────────────────────────────────────────
+
+VERSION="0.1.0"
+API_URL="${SKILLBASE_API_URL:-https://app.clawhost.com}"
+SKILLBASE_DIR="${SKILLBASE_DIR:-.}"
+
+# ─── Colors ──────────────────────────────────────────────────────────────────
+
+if [[ -z "${NO_COLOR:-}" ]] && [[ -t 1 ]]; then
+  RED='\033[0;31m'
+  GREEN='\033[0;32m'
+  YELLOW='\033[0;33m'
+  BLUE='\033[0;34m'
+  BOLD='\033[1m'
+  DIM='\033[2m'
+  RESET='\033[0m'
+else
+  RED='' GREEN='' YELLOW='' BLUE='' BOLD='' DIM='' RESET=''
+fi
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+die() { printf "${RED}error:${RESET} %s\n" "$*" >&2; exit 1; }
+info() { printf "${BLUE}::${RESET} %s\n" "$*"; }
+success() { printf "${GREEN}ok:${RESET} %s\n" "$*"; }
+warn() { printf "${YELLOW}warning:${RESET} %s\n" "$*" >&2; }
+
+check_deps() {
+  command -v curl >/dev/null 2>&1 || die "curl is required but not found"
+  command -v jq >/dev/null 2>&1 || die "jq is required but not found (install: brew install jq / apt install jq)"
+}
+
+check_auth() {
+  [[ -n "${SKILLBASE_API_TOKEN:-}" ]] || die "SKILLBASE_API_TOKEN is not set. Get one from your dashboard: Settings > API Keys"
+}
+
+# Central API request helper.
+# Usage: api_request GET /api/skillbase/skills
+#        api_request POST /api/skillbase/skills -d '{"name":"foo"}'
+# Prints response body on success, dies on error.
+api_request() {
+  local method="$1" endpoint="$2"
+  shift 2
+  local url="${API_URL}${endpoint}"
+  local tmpfile
+  tmpfile=$(mktemp)
+
+  local http_code
+  http_code=$(curl -s -w '%{http_code}' -o "$tmpfile" \
+    -X "$method" \
+    -H "x-skillbase-token: ${SKILLBASE_API_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json" \
+    "$@" \
+    "$url" 2>/dev/null) || {
+    rm -f "$tmpfile"
+    die "Failed to connect to ${API_URL}. Check SKILLBASE_API_URL and your network."
+  }
+
+  if [[ "$http_code" == "000" ]]; then
+    rm -f "$tmpfile"
+    die "Failed to connect to ${API_URL}. Check SKILLBASE_API_URL and your network."
+  fi
+
+  if [[ "$http_code" -ge 400 ]]; then
+    local err_msg
+    err_msg=$(jq -r '.error // "Unknown error"' "$tmpfile" 2>/dev/null || cat "$tmpfile")
+    rm -f "$tmpfile"
+    die "API error ($http_code): $err_msg"
+  fi
+
+  cat "$tmpfile"
+  rm -f "$tmpfile"
+}
+
+# Strip surrounding double quotes from a string (handles JSON-escaped YAML values).
+strip_quotes() {
+  local val="$1"
+  if [[ "${val:0:1}" == '"' && "${val: -1}" == '"' ]]; then
+    # Use jq to properly unescape JSON string
+    printf '%s' "$val" | jq -r '.' 2>/dev/null || printf '%s' "${val:1:${#val}-2}"
+  else
+    printf '%s' "$val"
+  fi
+}
+
+# Parse YAML frontmatter from a SKILL.md file.
+# Sets: FM_NAME, FM_VERSION, FM_DESCRIPTION, FM_CATEGORY, FM_TAGS (comma-separated), FM_BODY_START
+parse_frontmatter() {
+  local file="$1"
+  FM_NAME="" FM_VERSION="" FM_DESCRIPTION="" FM_CATEGORY="" FM_TAGS="" FM_BODY_START=0
+
+  local in_fm=0 line_num=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line_num=$((line_num + 1))
+    if [[ "$line" == "---" ]]; then
+      if [[ $in_fm -eq 0 ]]; then
+        in_fm=1
+        continue
+      else
+        FM_BODY_START=$((line_num + 1))
+        break
+      fi
+    fi
+    if [[ $in_fm -eq 1 ]]; then
+      local key val
+      key="${line%%:*}"
+      val="${line#*: }"
+      # Trim leading/trailing whitespace
+      val="${val#"${val%%[![:space:]]*}"}"
+      val="${val%"${val##*[![:space:]]}"}"
+      case "$key" in
+        name)        FM_NAME=$(strip_quotes "$val") ;;
+        version)     FM_VERSION=$(strip_quotes "$val") ;;
+        description) FM_DESCRIPTION=$(strip_quotes "$val") ;;
+        category)    FM_CATEGORY=$(strip_quotes "$val") ;;
+        tags)
+          # Strip brackets and spaces: [a, b, c] → a,b,c
+          val="${val#\[}"
+          val="${val%\]}"
+          FM_TAGS="$val"
+          ;;
+      esac
+    fi
+  done < "$file"
+
+  [[ $FM_BODY_START -gt 0 ]] || die "No valid YAML frontmatter found in $file"
+}
+
+# Extract body content (everything after frontmatter).
+get_body() {
+  local file="$1" start="$2"
+  tail -n +"$start" "$file" | sed '/./,$!d'
+}
+
+# Build a JSON array string from comma-separated tag names.
+# "browser, automation" → '["browser","automation"]'
+tags_to_json_array() {
+  local tags="$1"
+  if [[ -z "$tags" ]]; then
+    printf '[]'
+    return
+  fi
+  local IFS=','
+  local arr=()
+  for tag in $tags; do
+    # Trim whitespace
+    tag="${tag#"${tag%%[![:space:]]*}"}"
+    tag="${tag%"${tag##*[![:space:]]}"}"
+    tag=$(strip_quotes "$tag")
+    [[ -n "$tag" ]] && arr+=("$tag")
+  done
+  printf '%s\n' "${arr[@]}" | jq -R . | jq -s .
+}
+
+# ─── Commands ────────────────────────────────────────────────────────────────
+
+cmd_search() {
+  [[ $# -ge 1 ]] || die "Usage: skillbase search <query>"
+  local query="$*"
+  local encoded
+  encoded=$(printf '%s' "$query" | jq -sRr @uri)
+
+  local response
+  response=$(api_request GET "/api/skillbase/skills?q=${encoded}")
+
+  local count
+  count=$(printf '%s' "$response" | jq '.skills | length')
+
+  if [[ "$count" -eq 0 ]]; then
+    info "No skills found matching \"$query\""
+    return
+  fi
+
+  printf "${BOLD}Found %d skill(s) matching \"%s\":${RESET}\n\n" "$count" "$query"
+  printf '%s' "$response" | jq -r '.skills[] | "  \(.slug)\t\(.semver)\t[\(.category // "-")]\t\(.name)\t\(.description // "-" | if length > 50 then .[:50] + "..." else . end)"' | column -t -s $'\t'
+  echo
+}
+
+cmd_list() {
+  local response
+  response=$(api_request GET "/api/skillbase/skills?mine=true")
+
+  local count
+  count=$(printf '%s' "$response" | jq '.skills | length')
+
+  if [[ "$count" -eq 0 ]]; then
+    info "You have no skills yet. Create one with: skillbase upload <path>"
+    return
+  fi
+
+  printf "${BOLD}Your skills (%d):${RESET}\n\n" "$count"
+  printf '%s' "$response" | jq -r '.skills[] | "  \(.slug)\tv\(.semver)\t\(if .isPublic then "public" else "private" end)\t\(.name)"' | column -t -s $'\t'
+  echo
+}
+
+cmd_info() {
+  [[ $# -ge 1 ]] || die "Usage: skillbase info <slug>"
+  local slug="$1"
+  local encoded
+  encoded=$(printf '%s' "$slug" | jq -sRr @uri)
+
+  local response
+  response=$(api_request GET "/api/skillbase/skills/resolve?slug=${encoded}")
+
+  printf "\n${BOLD}%s${RESET}\n" "$(printf '%s' "$response" | jq -r '.name')"
+  printf "${DIM}%s${RESET}\n\n" "$(printf '%s' "$response" | jq -r '.slug')"
+
+  printf "  %-14s %s\n" "Version:" "$(printf '%s' "$response" | jq -r '.semver')"
+  printf "  %-14s %s\n" "Category:" "$(printf '%s' "$response" | jq -r '.category // "-"')"
+  printf "  %-14s %s\n" "Visibility:" "$(printf '%s' "$response" | jq -r 'if .isPublic then "public" else "private" end')"
+  printf "  %-14s %s\n" "Description:" "$(printf '%s' "$response" | jq -r '.description // "-"')"
+
+  local tags
+  tags=$(printf '%s' "$response" | jq -r '[.tags[]?.name // empty] | join(", ")')
+  [[ -n "$tags" ]] && printf "  %-14s %s\n" "Tags:" "$tags"
+
+  printf "  %-14s %s\n" "Created:" "$(printf '%s' "$response" | jq -r '.createdAt // "-"')"
+  printf "  %-14s %s\n" "Updated:" "$(printf '%s' "$response" | jq -r '.updatedAt // "-"')"
+
+  local star_count
+  star_count=$(printf '%s' "$response" | jq -r '.starCount // 0')
+  [[ "$star_count" -gt 0 ]] && printf "  %-14s %s\n" "Stars:" "$star_count"
+
+  echo
+}
+
+cmd_download() {
+  local force=0 slug=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force|-f) force=1; shift ;;
+      -*) die "Unknown flag: $1" ;;
+      *) slug="$1"; shift ;;
+    esac
+  done
+  [[ -n "$slug" ]] || die "Usage: skillbase download [--force] <slug>"
+
+  local encoded
+  encoded=$(printf '%s' "$slug" | jq -sRr @uri)
+
+  local response
+  response=$(api_request GET "/api/skillbase/skills/resolve?slug=${encoded}")
+
+  local content
+  content=$(printf '%s' "$response" | jq -r '.content // empty')
+  [[ -n "$content" ]] || die "Skill content not available (private skill or no content)"
+
+  local target_dir="${SKILLBASE_DIR}/skills/${slug}"
+  local target_file="${target_dir}/SKILL.md"
+
+  if [[ -f "$target_file" && $force -eq 0 ]]; then
+    die "File already exists: $target_file (use --force to overwrite)"
+  fi
+
+  mkdir -p "$target_dir"
+
+  # Build SKILL.md with frontmatter
+  {
+    echo "---"
+    printf "name: %s\n" "$(printf '%s' "$response" | jq -r '.name')"
+    printf "version: %s\n" "$(printf '%s' "$response" | jq -r '.semver')"
+    printf "description: %s\n" "$(printf '%s' "$response" | jq -r '.description // ""')"
+    printf "category: %s\n" "$(printf '%s' "$response" | jq -r '.category // ""')"
+    local tags
+    tags=$(printf '%s' "$response" | jq -r '[.tags[]?.name // empty] | join(", ")')
+    printf "tags: [%s]\n" "$tags"
+    echo "---"
+    echo
+    printf '%s' "$content"
+    # Ensure trailing newline
+    [[ "${content: -1}" == $'\n' ]] || echo
+  } > "$target_file"
+
+  success "Saved to $target_file"
+}
+
+cmd_upload() {
+  local file=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -*) die "Unknown flag: $1" ;;
+      *) file="$1"; shift ;;
+    esac
+  done
+  [[ -n "$file" ]] || die "Usage: skillbase upload <path-to-SKILL.md>"
+  [[ -f "$file" ]] || die "File not found: $file"
+
+  parse_frontmatter "$file"
+  [[ -n "$FM_NAME" ]] || die "Missing 'name' in frontmatter"
+
+  local body
+  body=$(get_body "$file" "$FM_BODY_START")
+  [[ -n "$body" ]] || die "Skill has no content body"
+
+  local tags_json
+  tags_json=$(tags_to_json_array "$FM_TAGS")
+
+  local payload
+  payload=$(jq -n \
+    --arg name "$FM_NAME" \
+    --arg content "$body" \
+    --arg semver "${FM_VERSION:-1.0.0}" \
+    --arg description "$FM_DESCRIPTION" \
+    --arg category "$FM_CATEGORY" \
+    --argjson isPublic true \
+    --argjson tagNames "$tags_json" \
+    '{name: $name, content: $content, semver: $semver, description: $description, category: $category, isPublic: $isPublic, tagNames: $tagNames}')
+
+  local response
+  response=$(api_request POST "/api/skillbase/skills" -d "$payload")
+
+  local created_slug
+  created_slug=$(printf '%s' "$response" | jq -r '.slug // "unknown"')
+
+  success "Skill created: $created_slug (v${FM_VERSION:-1.0.0})"
+}
+
+cmd_edit() {
+  local slug="" file=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -*) die "Unknown flag: $1" ;;
+      *)
+        if [[ -z "$slug" ]]; then
+          slug="$1"
+        elif [[ -z "$file" ]]; then
+          file="$1"
+        fi
+        shift ;;
+    esac
+  done
+  [[ -n "$slug" ]] || die "Usage: skillbase edit <slug> [path-to-SKILL.md]"
+
+  # Default to the local file if not specified
+  if [[ -z "$file" ]]; then
+    file="${SKILLBASE_DIR}/skills/${slug}/SKILL.md"
+  fi
+  [[ -f "$file" ]] || die "File not found: $file"
+
+  # Resolve existing skill to get parentId
+  local encoded
+  encoded=$(printf '%s' "$slug" | jq -sRr @uri)
+  local existing
+  existing=$(api_request GET "/api/skillbase/skills/resolve?slug=${encoded}")
+  local parent_id
+  parent_id=$(printf '%s' "$existing" | jq -r '.id')
+  [[ -n "$parent_id" && "$parent_id" != "null" ]] || die "Could not resolve skill: $slug"
+
+  parse_frontmatter "$file"
+
+  local body
+  body=$(get_body "$file" "$FM_BODY_START")
+  [[ -n "$body" ]] || die "Skill has no content body"
+
+  local tags_json
+  tags_json=$(tags_to_json_array "$FM_TAGS")
+
+  local payload
+  payload=$(jq -n \
+    --arg parentId "$parent_id" \
+    --arg content "$body" \
+    --arg semver "${FM_VERSION:-1.0.0}" \
+    --arg name "${FM_NAME:-}" \
+    --arg description "$FM_DESCRIPTION" \
+    --arg category "$FM_CATEGORY" \
+    --argjson tagNames "$tags_json" \
+    '{parentId: $parentId, content: $content, semver: $semver, name: $name, description: $description, category: $category, tagNames: $tagNames}')
+
+  local response
+  response=$(api_request POST "/api/skillbase/skills/version" -d "$payload")
+
+  local new_semver
+  new_semver=$(printf '%s' "$response" | jq -r '.semver // "?"')
+
+  success "Skill updated: $slug (v${new_semver})"
+}
+
+cmd_version() {
+  printf "skillbase v%s\n" "$VERSION"
+}
+
+cmd_help() {
+  local cmd="${1:-}"
+  case "$cmd" in
+    search)
+      printf "Usage: skillbase search <query>\n\n"
+      printf "Search public skills by name, description, or tags.\n"
+      ;;
+    download)
+      printf "Usage: skillbase download [--force] <slug>\n\n"
+      printf "Download a skill to \$SKILLBASE_DIR/skills/<slug>/SKILL.md\n"
+      printf "\nFlags:\n"
+      printf "  --force, -f  Overwrite existing file\n"
+      ;;
+    upload)
+      printf "Usage: skillbase upload <path-to-SKILL.md>\n\n"
+      printf "Upload a new skill. The file must have YAML frontmatter with at least a 'name' field.\n"
+      ;;
+    edit)
+      printf "Usage: skillbase edit <slug> [path-to-SKILL.md]\n\n"
+      printf "Create a new version of an existing skill.\n"
+      printf "If no path is given, uses \$SKILLBASE_DIR/skills/<slug>/SKILL.md\n"
+      ;;
+    list)
+      printf "Usage: skillbase list\n\n"
+      printf "List your own skills.\n"
+      ;;
+    info)
+      printf "Usage: skillbase info <slug>\n\n"
+      printf "Show details about a skill.\n"
+      ;;
+    *)
+      cat <<'USAGE'
+Usage: skillbase <command> [args]
+
+Commands:
+  search <query>           Search public skills
+  list                     List your own skills
+  info <slug>              Show skill details
+  download [--force] <slug>  Download a skill
+  upload <path>            Upload a new skill
+  edit <slug> [path]       Update an existing skill (new version)
+  help [command]           Show help for a command
+  version                  Show version
+
+Environment:
+  SKILLBASE_API_TOKEN  API token (required, get from dashboard)
+  SKILLBASE_API_URL    API base URL (default: https://app.clawhost.com)
+  SKILLBASE_DIR        Base directory for skills (default: .)
+
+USAGE
+      ;;
+  esac
+}
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+
+main() {
+  check_deps
+
+  case "${1:-}" in
+    search)   shift; check_auth; cmd_search "$@" ;;
+    download) shift; check_auth; cmd_download "$@" ;;
+    upload)   shift; check_auth; cmd_upload "$@" ;;
+    edit)     shift; check_auth; cmd_edit "$@" ;;
+    list)     shift; check_auth; cmd_list "$@" ;;
+    info)     shift; check_auth; cmd_info "$@" ;;
+    version|--version|-v) cmd_version ;;
+    help|--help|-h) shift 2>/dev/null || true; cmd_help "$@" ;;
+    "") cmd_help ;;
+    *) die "Unknown command: $1. Run 'skillbase help' for usage." ;;
+  esac
+}
+
+main "$@"

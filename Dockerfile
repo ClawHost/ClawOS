@@ -66,6 +66,14 @@ RUN --mount=type=cache,target=/home/node/.npm,uid=1000,gid=1000 \
       clawhub install --force "$name" 2>&1 || echo "[build] warning: $name install failed (non-fatal)"; \
     done < /opt/clawos/config/skills-manifest.txt'
 
+# Bundled skills (not in clawhub registry)
+COPY skills/ /home/node/.openclaw/skills/
+RUN chown -R node:node /home/node/.openclaw/skills/
+
+# Skillbase CLI
+COPY bin/skillbase /usr/local/bin/skillbase
+RUN chmod +x /usr/local/bin/skillbase
+
 # Whisper binary, libs, model + symlinks
 COPY --from=whisper-builder /usr/local/bin/whisper-cli /usr/local/bin/whisper-cli
 COPY --from=whisper-builder /usr/local/lib/whisper/ /usr/local/lib/
