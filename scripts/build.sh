@@ -4,12 +4,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMG="${IMAGE_NAME:-clawos}"
 TAG="${IMAGE_TAG:-latest}"
+PLATFORM="${IMAGE_PLATFORM:-linux/amd64}"
 
 "$ROOT/scripts/validate.sh"
 echo ""
 
-echo "Building $IMG:$TAG"
+echo "Building $IMG:$TAG (platform: $PLATFORM)"
 DOCKER_BUILDKIT=1 docker build \
+  --platform "$PLATFORM" \
   --build-arg BUILDKIT_INLINE_CACHE=1 \
   -t "$IMG:$TAG" \
   -f "$ROOT/Dockerfile" \
