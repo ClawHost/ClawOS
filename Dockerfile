@@ -32,8 +32,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean \
  && apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates chromium curl ffmpeg git gnupg gosu jq libgomp1 sqlite3 tini \
- && rm -rf /var/lib/apt/lists/*
+      ca-certificates chromium curl ffmpeg git gnupg gosu jq libgomp1 openssh-server sqlite3 tini \
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /run/sshd \
+ && ssh-keygen -A
 
 ENV CHROMIUM_PATH=/usr/bin/chromium \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
@@ -41,7 +43,7 @@ ENV CHROMIUM_PATH=/usr/bin/chromium \
     PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
 
 # OpenClaw + Clawhub + QMD
-ARG OC_VERSION=2026.2.15
+ARG OC_VERSION=2026.2.19-2
 RUN --mount=type=cache,target=/root/.npm \
     npm install -g "openclaw@${OC_VERSION}" clawhub @tobilu/qmd
 
@@ -107,6 +109,8 @@ ENV OPENROUTER_API_KEY="" \
     BRAVE_API_KEY="" \
     FIRECRAWL_API_KEY="" \
     ELEVENLABS_API_KEY="" \
+    SKILLBASE_API_TOKEN="" \
+    SKILLBASE_API_URL="" \
     CLAWOS_PORT="" \
     CLAWOS_ALLOWED_ORIGINS="" \
     CLAWOS_TLS_ENABLED="" \
@@ -137,7 +141,7 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=3 \
 
 # No USER directive: entrypoint runs as root, fixes volume ownership, then gosu node.
 WORKDIR /home/node
-EXPOSE 18789 18793
+EXPOSE 18789 18793 2222
 LABEL org.opencontainers.image.title="ClawOS" \
       org.opencontainers.image.description="Clawhost Agent Runtime" \
       org.opencontainers.image.vendor="Clawhost" \

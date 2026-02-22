@@ -42,12 +42,24 @@ if [[ -f "$OC/openclaw.json" ]]; then
   [[ -f "$CLAWOS_SCRIPTS/patch-config.sh" ]] && source "$CLAWOS_SCRIPTS/patch-config.sh" && patch_config
   [[ -f "$CLAWOS_SCRIPTS/wire-auth.sh" ]]    && source "$CLAWOS_SCRIPTS/wire-auth.sh"    && wire_auth
   [[ -f "$CLAWOS_SCRIPTS/wire-channels.sh" ]] && source "$CLAWOS_SCRIPTS/wire-channels.sh" && wire_channels
+  [[ -f "$CLAWOS_SCRIPTS/wire-ssh.sh" ]]      && source "$CLAWOS_SCRIPTS/wire-ssh.sh"      && wire_ssh
 fi
 
 # ── 4. Workspace files ─────────────────────────────────────────────────────
 if [[ -d "$RUN_CFG/workspace" ]]; then
   log "applying runtime workspace files"
-  cp -r "$RUN_CFG/workspace/." "$WS/"
+  # Skills live in $OC/skills/, not $WS/skills/ — copy them to the right place
+  if [[ -d "$RUN_CFG/workspace/skills" ]]; then
+    log "  copying user skills to $OC/skills/"
+    cp -r "$RUN_CFG/workspace/skills/." "$OC/skills/"
+  fi
+  # Copy remaining workspace files (excluding skills/)
+  for item in "$RUN_CFG/workspace"/*; do
+    [[ -e "$item" ]] || continue
+    base="$(basename "$item")"
+    [[ "$base" == "skills" ]] && continue
+    cp -r "$item" "$WS/$base"
+  done
 fi
 for src in "$TPL"/workspace/*; do
   [[ -e "$src" ]] || continue
