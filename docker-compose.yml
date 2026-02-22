@@ -20,7 +20,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        OC_VERSION: "2026.2.15"
+        OC_VERSION: "2026.2.19-2"
         WHISPER_MODEL: "base"
     image: clawos:dev
     container_name: clawos-test

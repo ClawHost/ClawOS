@@ -199,8 +199,8 @@ Set the env var(s) for the channel; the entrypoint enables the channel and plugi
 Speech-to-text is handled by `whisper-cli` via `tools.media.audio` (not a skill).
 The binary and model are baked into the image.
 
-| Variable                 | What it patches                         | Default                      | Example                   |
-| ------------------------ | --------------------------------------- | ---------------------------- | ------------------------- |
+| Variable                 | What it patches                          | Default                      | Example                   |
+| ------------------------ | ---------------------------------------- | ---------------------------- | ------------------------- |
 | `CLAWOS_WHISPER_MODEL`   | `tools.media.audio.models[0]` model path | `base`                       | `tiny`, `small`, `medium` |
 | `CLAWOS_WHISPER_THREADS` | `tools.media.audio.models[0]` threads    | `4`                          | `2`, `8`                  |
 | `WHISPER_CPP_PATH`       | Binary location (env reference)          | `/usr/local/bin/whisper-cli` | —                         |
@@ -414,16 +414,16 @@ IMAGE_NAME=ghcr.io/clawhost/clawos IMAGE_TAG=v2 bash scripts/push.sh
 
 ## Build Args
 
-| Arg                   | Default     | Purpose                                                                 |
-| --------------------- | ----------- | ----------------------------------------------------------------------- |
-| `OC_VERSION`          | `2026.2.15` | OpenClaw npm package version                                            |
-| `WHISPER_CPP_VERSION` | `v1.7.4`    | whisper.cpp git tag to compile                                          |
-| `WHISPER_MODEL`       | `base`      | GGML model to pre-download (`tiny`, `base`, `small`, `medium`, `large`) |
+| Arg                   | Default       | Purpose                                                                 |
+| --------------------- | ------------- | ----------------------------------------------------------------------- |
+| `OC_VERSION`          | `2026.2.19-2` | OpenClaw npm package version                                            |
+| `WHISPER_CPP_VERSION` | `v1.7.4`      | whisper.cpp git tag to compile                                          |
+| `WHISPER_MODEL`       | `base`        | GGML model to pre-download (`tiny`, `base`, `small`, `medium`, `large`) |
 
 ```bash
 # Build with small whisper model and specific OpenClaw version
 docker build \
-  --build-arg OC_VERSION=2026.2.15 \
+  --build-arg OC_VERSION=2026.2.19-2 \
   --build-arg WHISPER_MODEL=small \
   --build-arg WHISPER_CPP_VERSION=v1.7.4 \
   -t clawos:next .
