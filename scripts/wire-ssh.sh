@@ -22,7 +22,12 @@ EOF
 
   # Write authorized_keys for node user
   mkdir -p /home/node/.ssh
+  # User's own SSH public key (from vault, set at deployment)
   echo "${CLAWOS_SSH_AUTHORIZED_KEY}" > /home/node/.ssh/authorized_keys
+  # Bastion's public key (allows proxy connections from bastion service)
+  if [[ -n "${CLAWOS_SSH_BASTION_KEY:-}" ]]; then
+    echo "${CLAWOS_SSH_BASTION_KEY}" >> /home/node/.ssh/authorized_keys
+  fi
   chmod 700 /home/node/.ssh
   chmod 600 /home/node/.ssh/authorized_keys
   chown -R node:node /home/node/.ssh

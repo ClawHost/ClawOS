@@ -7,6 +7,7 @@ scripts/*
 !scripts/patch-config.sh
 !scripts/wire-auth.sh
 !scripts/wire-channels.sh
+!scripts/wire-ssh.sh
 test/
 docker-compose.yml
 README.md
